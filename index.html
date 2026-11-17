@@ -1172,6 +1172,7 @@
         <button type="button" class="btn-ghost" id="downloadApp">Unduh Aplikasi (HTML)</button>
         <button type="button" class="btn-danger" id="resetAll">Hapus Semua Data</button>
       </div>
+      <p class="empty" style="margin:8px 0 0">Keterangan backup: format lama (array) hanya mengganti transaksi (dan dompet jika tersedia); hutang, budget, investasi, dan target tetap dipertahankan. Format baru (objek) memulihkan semua data termasuk investasi dan target.</p>
     </section>
 
     <footer id="secTentang">Semua data hanya tersimpan di perangkat ini (localStorage).</footer>
@@ -2386,14 +2387,29 @@
            } else if (!Array.isArray(isi)) {
              budgets = {};
            }
-           if (isi && !Array.isArray(isi) && Array.isArray(isi.investasi)) {
-             investasi = isi.investasi;
-             muatInvestasi();
-           }
-           if (isi && !Array.isArray(isi) && Array.isArray(isi.target)) {
-             targetTabungan = isi.target;
-             muatTarget();
-           }
+            if (isi && !Array.isArray(isi) && Array.isArray(isi.investasi)) {
+              investasi = isi.investasi
+                .filter((x) => x)
+                .map((x) => ({
+                  id: (x.id) || buatId(),
+                  nama: String(x.nama || ""),
+                  kategori: (["BTC", "Saham", "Reksa Dana"].includes(x.kategori)) ? x.kategori : "Reksa Dana",
+                  modal: Number(x.modal) || 0,
+                  nilai: Number(x.nilai) || 0,
+                }))
+                .filter((x) => x.nama);
+            }
+            if (isi && !Array.isArray(isi) && Array.isArray(isi.target)) {
+              targetTabungan = isi.target
+                .filter((x) => x)
+                .map((x) => ({
+                  id: (x.id) || buatId(),
+                  nama: String(x.nama || ""),
+                  target: Number(x.target) || 0,
+                  terkumpul: Number(x.terkumpul) || 0,
+                }))
+                .filter((x) => x.nama && x.target > 0);
+            }
            simpanHutang();
            simpanBudget();
            simpanInvestasi();
@@ -2404,9 +2420,10 @@
           resetForm();
           render();
           alert("Backup berhasil dipulihkan.");
-        } catch (err) {
-          alert("Gagal memulihkan: file tidak valid.");
-        }
+         } catch (err) {
+           try { console.error("IMPORT ERR", err && err.stack ? err.stack : err); } catch(e){}
+           alert("Gagal memulihkan: file tidak valid.");
+         }
       };
       reader.readAsText(file);
       e.target.value = "";
