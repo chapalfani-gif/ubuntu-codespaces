@@ -896,6 +896,24 @@
           <div class="sbox"><div class="s-label">Persentase</div><div class="s-value" id="invPersen">0%</div></div>
         </div>
         <div class="invest-list" id="invAlokasi"></div>
+        <div class="s-sub" id="btcPriceInfo" style="margin-top:8px">Mengambil harga BTC/IDR…</div>
+        <div class="card" id="onchainCard" style="margin-top:14px;padding:14px;border:1px solid var(--border, #ddd)">
+          <h3 style="margin:0 0 8px">Pemantauan Wallet BTC On-chain</h3>
+          <p class="s-sub" style="margin:0 0 10px">Masukkan alamat publik Bitcoin (bc1p, bc1q, 1, atau 3). Saldo jaringan ditampilkan terpisah dan tidak menambah portofolio investasi.</p>
+          <form id="onchainForm" class="inline-form">
+            <div class="field" style="flex:1;min-width:220px">
+              <label for="onchainAddress">Alamat publik BTC</label>
+              <input type="text" id="onchainAddress" placeholder="bc1p..." autocomplete="off" spellcheck="false" />
+            </div>
+            <button type="submit" class="btn-primary">Pantau alamat</button>
+            <button type="button" class="btn-ghost" id="onchainRefresh">Perbarui</button>
+          </form>
+          <div class="invest-summary" style="margin-top:12px">
+            <div class="sbox"><div class="s-label">Saldo BTC on-chain</div><div class="s-value" id="onchainBtc">— BTC</div></div>
+            <div class="sbox"><div class="s-label">Estimasi nilai</div><div class="s-value" id="onchainIdr">—</div></div>
+          </div>
+          <div class="s-sub" id="onchainStatus" role="status" style="margin-top:8px">Belum ada alamat yang dipantau.</div>
+        </div>
         <form id="investasiForm" class="inline-form" style="margin-top:14px">
           <div class="field">
             <label for="invNama">Nama Aset</label>
@@ -1005,8 +1023,9 @@
             </datalist>
           </div>
           <div class="field" id="wrapDompetTujuan" style="display:none">
-            <label for="dompetTujuan">Dompet Tujuan / Ke</label>
+            <label for="dompetTujuan">Tujuan transfer</label>
             <select id="dompetTujuan"></select>
+            <small class="s-sub">Pilih dompet lain atau aset investasi.</small>
           </div>
           <div class="field">
             <label for="jumlah">Jumlah (Rp)</label>
@@ -1340,6 +1359,99 @@
     }
     function simpanInvestasi(){ localStorage.setItem(STORAGE_KEY_INVESTASI, JSON.stringify(investasi)); }
 
+    let hargaBtcIdr = 0;
+    let waktuHargaBtc = 0;
+    const STORAGE_KEY_ONCHAIN = "pencatatanKeuangan.onchainAddress.v1";
+    let alamatOnchain = "";
+    let saldoOnchainSats = null;
+    let waktuOnchain = 0;
+    function formatBtc(sats) { return (Number(sats || 0) / 100000000).toFixed(8); }
+    function alamatBtcValid(a) {
+      const v = String(a || "").trim();
+      return /^(bc1[ac-hj-np-z02-9]{11,71}|[13][a-km-zA-HJ-NP-Z1-9]{25,34})$/.test(v);
+    }
+    function renderOnchain() {
+      const btcEl = document.getElementById("onchainBtc");
+      const idrEl = document.getElementById("onchainIdr");
+      if (!btcEl || !idrEl) return;
+      if (saldoOnchainSats === null) { btcEl.textContent = "— BTC"; idrEl.textContent = "—"; return; }
+      const btc = saldoOnchainSats / 100000000;
+      btcEl.textContent = formatBtc(saldoOnchainSats) + " BTC";
+      idrEl.textContent = hargaBtcIdr > 0 ? rupiah(btc * hargaBtcIdr) : "Harga belum tersedia";
+    }
+    async function perbaruiSaldoOnchain() {
+      const status = document.getElementById("onchainStatus");
+      if (!alamatOnchain) { if (status) status.textContent = "Belum ada alamat yang dipantau."; return; }
+      if (!alamatBtcValid(alamatOnchain)) { if (status) status.textContent = "Format alamat Bitcoin tidak dikenali. Periksa kembali alamat publik Anda."; return; }
+      if (status) status.textContent = "Mengambil data saldo dari jaringan Bitcoin…";
+
+      async function ambilSaldo(url, sumber) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 10000);
+        try {
+          const r = await fetch(url, { cache: "no-store", signal: controller.signal });
+          if (!r.ok) throw new Error("HTTP " + r.status);
+          const j = await r.json();
+          const c = j.chain_stats || {};
+          const m = j.mempool_stats || {};
+          const confirmed = (Number(c.funded_txo_sum) || 0) - (Number(c.spent_txo_sum) || 0);
+          const pending = (Number(m.funded_txo_sum) || 0) - (Number(m.spent_txo_sum) || 0);
+          return { confirmed, pending, sumber };
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+
+      const alamat = encodeURIComponent(alamatOnchain);
+      const sumberUtama = "https://blockstream.info/api/address/" + alamat;
+      const sumberCadangan = "https://mempool.space/api/address/" + alamat;
+
+      try {
+        let hasil;
+        try {
+          hasil = await ambilSaldo(sumberUtama, "Blockstream");
+        } catch (eUtama) {
+          hasil = await ambilSaldo(sumberCadangan, "Mempool.space");
+        }
+        saldoOnchainSats = Math.max(0, hasil.confirmed + hasil.pending);
+        waktuOnchain = Date.now();
+        renderOnchain();
+        if (status) status.textContent = "Data " + hasil.sumber + " • " + (hasil.confirmed / 100000000).toFixed(8) + " BTC terkonfirmasi" + (hasil.pending ? " • transaksi belum terkonfirmasi " + (hasil.pending / 100000000).toFixed(8) + " BTC" : "") + " • diperbarui " + new Date(waktuOnchain).toLocaleTimeString("id-ID");
+      } catch (e) {
+        if (status) status.textContent = "Gagal mengambil saldo on-chain dari Blockstream dan Mempool.space (batas waktu 10 detik atau koneksi bermasalah). Silakan periksa koneksi lalu coba perbarui lagi.";
+      }
+    }
+    function alokasiInvestasi(id) { return transaksi.filter(t => t.jenis === "transfer" && t.invAssetId === id); }
+    function metrikInvestasi(x) {
+      const alokasi = alokasiInvestasi(x.id);
+      const tambahanModal = alokasi.reduce((s,t)=>s+(Number(t.jumlah)||0),0);
+      const qtyBtc = alokasi.reduce((s,t)=>s+(Number(t.btcQty)||0),0);
+      const modal = (Number(x.modal)||0) + tambahanModal;
+      let nilai = Number(x.nilai)||0;
+      if (x.kategori === "BTC" && qtyBtc > 0) nilai += hargaBtcIdr > 0 ? qtyBtc * hargaBtcIdr : tambahanModal;
+      else if (x.kategori !== "BTC") nilai += tambahanModal;
+      return {modal, nilai, qtyBtc, tambahanModal};
+    }
+    async function perbaruiHargaBtc() {
+      try {
+        const r = await fetch("https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=idr", { cache: "no-store" });
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        const j = await r.json();
+        const p = Number(j && j.bitcoin && j.bitcoin.idr);
+        if (!Number.isFinite(p) || p <= 0) throw new Error("Harga BTC tidak valid");
+        hargaBtcIdr = p; waktuHargaBtc = Date.now();
+        render();
+        renderOnchain();
+        const el = document.getElementById("btcPriceInfo");
+        if (el) el.textContent = "BTC/IDR " + rupiah(p) + " • CoinGecko • diperbarui " + new Date(waktuHargaBtc).toLocaleTimeString("id-ID");
+      } catch(e) {
+        const el = document.getElementById("btcPriceInfo");
+        if (el) el.textContent = hargaBtcIdr ? "Harga BTC terakhir: " + rupiah(hargaBtcIdr) + " (mungkin tertunda) • CoinGecko" : "Harga BTC belum tersedia (CoinGecko); nilai manual tetap digunakan.";
+      }
+    }
+    setInterval(perbaruiHargaBtc, 60000);
+
+
     function muatTarget(){
       try { const raw = localStorage.getItem(STORAGE_KEY_TARGET); targetTabungan = raw ? JSON.parse(raw) : []; if(!Array.isArray(targetTabungan)) targetTabungan=[]; }
       catch(e){ targetTabungan=[]; }
@@ -1381,7 +1493,7 @@
           t.dompet = bawaan;
           berubah = true;
         }
-        if (t.jenis === "transfer" && (!t.dompetTujuan || !idSah.has(t.dompetTujuan))) {
+        if (t.jenis === "transfer" && !String(t.dompetTujuan || "").startsWith("investasi:") && (!t.dompetTujuan || !idSah.has(t.dompetTujuan))) {
           t.dompetTujuan = bawaan;
           berubah = true;
         }
@@ -1489,8 +1601,8 @@
        document.getElementById("sumKeluar").textContent = rupiah(keluar);
        document.getElementById("sumSelisih").textContent = rupiah(masuk - keluar);
        // Investasi (independen dari transaksi)
-       const totalModal = investasi.reduce((s,x)=>s+(x.modal||0),0);
-       const totalNilai = investasi.reduce((s,x)=>s+(x.nilai||0),0);
+       const totalModal = investasi.reduce((s,x)=>s+metrikInvestasi(x).modal,0);
+       const totalNilai = investasi.reduce((s,x)=>s+metrikInvestasi(x).nilai,0);
        const elInv = document.getElementById("sumInvestasi");
        if (elInv) elInv.textContent = rupiah(totalNilai || totalModal);
 
@@ -1564,8 +1676,8 @@
        const empty = document.getElementById("investasiEmpty");
        const alok = document.getElementById("invAlokasi");
        if (!tbody) return;
-       const totalModal = investasi.reduce((s,x)=>s+(x.modal||0),0);
-       const totalNilai = investasi.reduce((s,x)=>s+(x.nilai||0),0);
+       const totalModal = investasi.reduce((s,x)=>s+metrikInvestasi(x).modal,0);
+       const totalNilai = investasi.reduce((s,x)=>s+metrikInvestasi(x).nilai,0);
        const untung = totalNilai - totalModal;
        const persen = totalModal>0 ? (untung/totalModal*100) : 0;
        const m=document.getElementById("invModal"); if(m) m.textContent=rupiah(totalModal);
@@ -1575,7 +1687,7 @@
        // alokasi per kategori
        if (alok) {
          const perKat = {};
-         investasi.forEach(x=>{ perKat[x.kategori]=(perKat[x.kategori]||0)+(x.nilai||x.modal||0); });
+         investasi.forEach(x=>{ const m=metrikInvestasi(x); perKat[x.kategori]=(perKat[x.kategori]||0)+(m.nilai||m.modal||0); });
          alok.innerHTML = Object.entries(perKat).map(([k,v])=>{
            const pct = totalNilai>0 ? (v/totalNilai*100) : 0;
            return '<span class="invest-chip">'+escapeHtml(k)+' '+pct.toFixed(0)+'%</span>';
@@ -1584,13 +1696,14 @@
        if (investasi.length===0){ tbody.innerHTML=""; if(empty) empty.style.display="block"; return; }
        if(empty) empty.style.display="none";
        tbody.innerHTML = investasi.map(x=>{
-         const u = (x.nilai||0)-(x.modal||0);
-         const p = x.modal>0 ? (u/x.modal*100) : 0;
+         const mx = metrikInvestasi(x);
+         const u = mx.nilai-mx.modal;
+         const p = mx.modal>0 ? (u/mx.modal*100) : 0;
          return `<tr>
            <td>${escapeHtml(x.nama)}</td>
            <td><span class="tag transfer">${escapeHtml(x.kategori)}</span></td>
-           <td class="num">${rupiah(x.modal)}</td>
-           <td class="num">${rupiah(x.nilai)}</td>
+           <td class="num">${rupiah(mx.modal)}</td>
+           <td class="num">${rupiah(mx.nilai)}</td>
            <td class="num" style="color:${u>=0?'var(--masuk)':'var(--keluar)'};font-weight:700">${u>=0?'+':''}${rupiah(u)}</td>
            <td class="num" style="font-weight:700">${p.toFixed(2).replace('.',',')}%</td>
            <td><button class="btn-danger btn-sm" data-hapus-investasi="${x.id}">Hapus</button></td>
@@ -1652,6 +1765,10 @@
         .join("");
     }
 
+    function investasiOptions() {
+      return investasi.map(x => '<option value="investasi:' + x.id + '">' + escapeHtml(x.nama) + ' (' + escapeHtml(x.kategori) + ')</option>').join("");
+    }
+
     // Isi ulang pilihan dompet di form dan filter (nilai terpilih dipertahankan)
     function refreshDompetSelects() {
       const opsi = dompet
@@ -1661,8 +1778,9 @@
       const isi = (el, denganSemua, labelSemua) => {
         if (!el) return;
         const lama = el.value;
-        el.innerHTML = (denganSemua ? '<option value="">' + labelSemua + "</option>" : "") + opsi;
-        if (Array.prototype.some.call(el.options, (o) => o.value === lama)) el.value = lama;
+        const opsiInvestasi = el.id === "dompetTujuan" ? '<optgroup label="Aset investasi">' + investasiOptions() + '</optgroup>' : "";
+        el.innerHTML = (denganSemua ? '<option value="">' + labelSemua + "</option>" : "") + opsi + opsiInvestasi;
+        if (Array.from(el.options).some((o) => o.value === lama)) el.value = lama;
       };
 
       isi(document.getElementById("dompet"), false);
@@ -2052,8 +2170,9 @@
           const labelJenis = t.jenis === "masuk" ? "Pemasukan" : t.jenis === "keluar" ? "Pengeluaran" : "Transfer";
           const tanda = t.jenis === "masuk" ? "+" : t.jenis === "keluar" ? "−" : "⇄";
           const warna = t.jenis === "masuk" ? "var(--masuk)" : t.jenis === "keluar" ? "var(--keluar)" : "var(--accent)";
+          const tujuanTransfer = t.invAssetId ? (investasi.find(x=>x.id===t.invAssetId)?.nama || "Aset investasi") : namaDompet(t.dompetTujuan);
           const teksDompet = isTransfer
-            ? escapeHtml(namaDompet(t.dompet)) + " &rarr; " + escapeHtml(namaDompet(t.dompetTujuan))
+            ? escapeHtml(namaDompet(t.dompet)) + " &rarr; " + escapeHtml(tujuanTransfer)
             : escapeHtml(namaDompet(t.dompet));
           return (
             "<tr>" +
@@ -2090,6 +2209,7 @@
       document.getElementById("wrapDompetTujuan").style.display = isTransfer ? "" : "none";
       document.getElementById("kategori").required = !isTransfer;
       document.getElementById("dompetTujuan").required = isTransfer;
+      document.getElementById("dompetTujuan").disabled = !isTransfer;
     }
 
     function resetForm() {
@@ -2120,8 +2240,13 @@
 
       if (jenis === "transfer") {
         if (!dompetTujuanId || dompetId === dompetTujuanId) {
-          alert("Dompet asal dan tujuan harus berbeda.");
+          alert("Pilih tujuan transfer yang berbeda.");
           return;
+        }
+        if (dompetTujuanId.startsWith("investasi:")) {
+          const asset = investasi.find(x=>x.id===dompetTujuanId.slice(11));
+          if (!asset) { alert("Aset investasi tidak ditemukan."); return; }
+          if (asset.kategori === "BTC" && (!hargaBtcIdr || !waktuHargaBtc || Date.now()-waktuHargaBtc>180000)) { alert("Harga BTC belum tersedia atau sudah kedaluwarsa. Coba lagi sebentar."); return; }
         }
         kategori = "Transfer";
       } else if (!kategori) {
@@ -2130,7 +2255,15 @@
 
       // Susun data transaksi
       const data = { tanggal, jenis, kategori, jumlah, catatan, dompet: dompetId };
-      if (jenis === "transfer") data.dompetTujuan = dompetTujuanId;
+      if (jenis === "transfer") {
+        data.dompetTujuan = dompetTujuanId;
+        if (dompetTujuanId.startsWith("investasi:")) {
+          const assetId = dompetTujuanId.slice(11);
+          const asset = investasi.find(x=>x.id===assetId);
+          data.invAssetId = assetId;
+          if (asset && asset.kategori === "BTC") { data.btcPrice = hargaBtcIdr; data.btcQty = jumlah / hargaBtcIdr; }
+        }
+      }
 
       if (editId) {
         // Mode ubah
@@ -2158,6 +2291,7 @@
         const id = btnEdit.getAttribute("data-edit");
         const t = transaksi.find((x) => x.id === id);
         if (!t) return;
+        if (t.invAssetId) { alert("Transfer ke investasi tidak dapat diubah melalui formulir biasa. Hapus transaksi lalu buat ulang agar kuantitas aset tetap akurat."); return; }
         editId = id;
         document.getElementById("tanggal").value = t.tanggal;
         document.getElementById("jenis").value = t.jenis;
@@ -2362,6 +2496,7 @@
                 dompet: t.dompet || "",
               };
               if (jenis === "transfer") obj.dompetTujuan = t.dompetTujuan || "";
+              if (jenis === "transfer" && t.invAssetId) { obj.invAssetId = String(t.invAssetId); obj.btcQty = Number(t.btcQty) || 0; obj.btcPrice = Number(t.btcPrice) || 0; }
               return obj;
             });
           simpanData();
@@ -2479,6 +2614,24 @@
       });
     }
 
+    // ===== Pemantauan saldo BTC on-chain (alamat publik saja) =====
+    const onchainForm = document.getElementById("onchainForm");
+    const onchainInput = document.getElementById("onchainAddress");
+    try { alamatOnchain = localStorage.getItem(STORAGE_KEY_ONCHAIN) || ""; } catch(e) { alamatOnchain = ""; }
+    if (onchainInput) onchainInput.value = alamatOnchain;
+    if (onchainForm) onchainForm.addEventListener("submit", function(e) {
+      e.preventDefault();
+      const value = String(onchainInput ? onchainInput.value : "").trim();
+      if (!value) { alert("Masukkan alamat publik Bitcoin terlebih dahulu."); return; }
+      if (!alamatBtcValid(value)) { alert("Format alamat Bitcoin tidak valid. Gunakan alamat BTC seperti bc1p…, bc1q…, 1…, atau 3…"); return; }
+      alamatOnchain = value;
+      try { localStorage.setItem(STORAGE_KEY_ONCHAIN, alamatOnchain); } catch(err) {}
+      saldoOnchainSats = null; renderOnchain(); perbaruiSaldoOnchain();
+    });
+    const onchainRefresh = document.getElementById("onchainRefresh");
+    if (onchainRefresh) onchainRefresh.addEventListener("click", perbaruiSaldoOnchain);
+    setInterval(perbaruiSaldoOnchain, 60000);
+
     // ===== Investasi: tambah/hapus =====
     const investasiForm = document.getElementById("investasiForm");
     if (investasiForm) {
@@ -2491,6 +2644,7 @@
         if (!nama || modal <= 0) return;
         investasi.push({ id: buatId(), nama, kategori, modal, nilai: nilai > 0 ? nilai : modal });
         simpanInvestasi();
+        refreshDompetSelects();
         investasiForm.reset();
         document.getElementById("invKategori").value = kategori;
         render();
@@ -2503,8 +2657,10 @@
         if (btn) {
           const id = btn.getAttribute("data-hapus-investasi");
           if (confirm("Hapus investasi ini?")) {
+            if (transaksi.some(t=>t.invAssetId===id)) { alert("Aset ini masih memiliki riwayat transfer. Hapus transaksi transfer terkait terlebih dahulu."); return; }
             investasi = investasi.filter(x => x.id !== id);
             simpanInvestasi();
+            refreshDompetSelects();
             render();
           }
         }
@@ -2658,6 +2814,7 @@
     document.getElementById("tanggal").value = hariIni();
     resetForm();
     render();
+    perbaruiHargaBtc();
   </script>
 </body>
 </html>
